@@ -3,7 +3,7 @@ import { Audio } from 'expo-av';
 import { documentDirectory, getInfoAsync, downloadAsync, deleteAsync } from 'expo-file-system/legacy';
 // @ts-ignore を撤廃し、先ほど定義した型を適用してインポート
 import { initWhisper, WhisperContext } from 'whisper.rn';
-import { FFmpegKit, ReturnCode } from 'ffmpeg-kit-react-native';
+import { FFmpegKit, ReturnCode } from '@sheehanmunim/react-native-ffmpeg';
 
 export function useLocalWhisper() {
   // any を撤廃し、自作した WhisperContext 型を厳格に適用
