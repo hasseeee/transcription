@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Audio } from 'expo-av';
-import { documentDirectory, getInfoAsync, downloadAsync } from 'expo-file-system';
+import { documentDirectory, getInfoAsync, downloadAsync } from 'expo-file-system/legacy';
 
 // @ts-ignore を撤廃し、先ほど定義した型を適用してインポート
 import { initWhisper, WhisperContext } from 'whisper.rn';
