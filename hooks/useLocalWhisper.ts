@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { Audio } from 'expo-av';
 import AudioRecord from 'react-native-audio-record';
 import { initWhisper, WhisperContext } from 'whisper.rn';
-import * as FileSystem from 'expo-file-system'; // スマホのファイルシステム操作ライブラリを追加
+// 【重要】名前空間( * as )を使わず、必要な機能だけを直接抽出（名前付きインポート）
+import { documentDirectory, getInfoAsync, downloadAsync } from 'expo-file-system';
 
 export function useLocalWhisper() {
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
@@ -13,22 +14,26 @@ export function useLocalWhisper() {
   useEffect(() => {
     async function loadModel() {
       try {
-        // 1. スマホの内部ストレージ（ドキュメントフォルダ）の絶対パスを定義
-        const modelPath = FileSystem.documentDirectory + 'ggml-tiny.bin';
-        const fileInfo = await FileSystem.getInfoAsync(modelPath);
+        // TypeScriptの型エラーを完全に封じ込めるためのNullチェック
+        if (!documentDirectory) {
+          throw new Error('端末の保存領域にアクセスできません');
+        }
 
-        // 2. モデルが存在しない場合（初回起動時）のみ、Hugging Faceから直接ダウンロード
+        // スマホの内部ストレージ（ドキュメントフォルダ）の絶対パスを定義
+        const modelPath = documentDirectory + 'ggml-tiny.bin';
+        const fileInfo = await getInfoAsync(modelPath);
+
+        // モデルが存在しない場合（初回起動時）のみ、直接ダウンロード（OTA）
         if (!fileInfo.exists) {
           setTranscription('初回設定：AIの脳みそをダウンロード中...(約75MB) しばらくお待ちください。');
           
-          // Whisper.cpp公式のHugging Faceリポジトリからtinyモデルを取得
           const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin';
-          await FileSystem.downloadAsync(modelUrl, modelPath);
+          await downloadAsync(modelUrl, modelPath);
           
           setTranscription('ダウンロード完了！AIの準備が整いました。');
         }
 
-        // 3. ローカルに保存されたモデルの絶対パスを直接C++エンジンに渡して初期化
+        // ローカルに保存されたモデルの絶対パスを渡してAIエンジンを初期化
         const context = await initWhisper({ filePath: modelPath });
         setWhisperContext(context);
 
