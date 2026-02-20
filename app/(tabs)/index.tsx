@@ -1,4 +1,6 @@
-import { StyleSheet, View, SafeAreaView } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context'; // ← ここから呼び出す
+
 import { AudioTranscriber } from '@/components/AudioTranscriber';
 
 export default function HomeScreen() {
