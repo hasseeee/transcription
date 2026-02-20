@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react';
 import { Audio } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
+import { documentDirectory, getInfoAsync, downloadAsync } from 'expo-file-system';
+
+// @ts-ignore を撤廃し、先ほど定義した型を適用してインポート
 import { initWhisper, WhisperContext } from 'whisper.rn';
 
 export function useLocalWhisper() {
+  // any を撤廃し、自作した WhisperContext 型を厳格に適用
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
   const [recording, setRecording] = useState<Audio.Recording | undefined>();
   const [transcription, setTranscription] = useState<string>('');
@@ -17,12 +20,18 @@ export function useLocalWhisper() {
   async function setupModel() {
     try {
       const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin';
-      const modelPath = `${FileSystem.documentDirectory}ggml-tiny.bin`;
-      const fileInfo = await FileSystem.getInfoAsync(modelPath);
+      
+      // パス取得の異常系ハンドリング（これは安全のために残します）
+      if (!documentDirectory) {
+        throw new Error('ローカルストレージのパスが取得できませんでした');
+      }
+      
+      const modelPath = `${documentDirectory}ggml-tiny.bin`;
+      const fileInfo = await getInfoAsync(modelPath);
       
       if (!fileInfo.exists) {
         console.log('モデルをダウンロード中...');
-        await FileSystem.downloadAsync(modelUrl, modelPath);
+        await downloadAsync(modelUrl, modelPath);
       }
       const context = await initWhisper({ filePath: modelPath });
       setWhisperContext(context);
@@ -76,6 +85,7 @@ export function useLocalWhisper() {
       const uri = recording.getURI();
       
       if (uri) {
+        // コンパイラが transcribe の引数と戻り値の型を完璧に検査します
         const { result } = await whisperContext.transcribe(uri, {
           language: 'ja',
         });
