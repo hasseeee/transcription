@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Audio } from 'expo-av'; // 権限リクエスト用としてのみ残す
-import AudioRecord from 'react-native-audio-record'; // 新しい純粋WAV録音ライブラリ
+import { Audio } from 'expo-av';
+import AudioRecord from 'react-native-audio-record';
 import { initWhisper, WhisperContext } from 'whisper.rn';
+import * as FileSystem from 'expo-file-system'; // スマホのファイルシステム操作ライブラリを追加
 
 export function useLocalWhisper() {
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
@@ -12,13 +13,28 @@ export function useLocalWhisper() {
   useEffect(() => {
     async function loadModel() {
       try {
-        const context = await initWhisper({
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          filePath: require('../assets/ggml-tiny.bin'),
-        });
+        // 1. スマホの内部ストレージ（ドキュメントフォルダ）の絶対パスを定義
+        const modelPath = FileSystem.documentDirectory + 'ggml-tiny.bin';
+        const fileInfo = await FileSystem.getInfoAsync(modelPath);
+
+        // 2. モデルが存在しない場合（初回起動時）のみ、Hugging Faceから直接ダウンロード
+        if (!fileInfo.exists) {
+          setTranscription('初回設定：AIの脳みそをダウンロード中...(約75MB) しばらくお待ちください。');
+          
+          // Whisper.cpp公式のHugging Faceリポジトリからtinyモデルを取得
+          const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin';
+          await FileSystem.downloadAsync(modelUrl, modelPath);
+          
+          setTranscription('ダウンロード完了！AIの準備が整いました。');
+        }
+
+        // 3. ローカルに保存されたモデルの絶対パスを直接C++エンジンに渡して初期化
+        const context = await initWhisper({ filePath: modelPath });
         setWhisperContext(context);
+
       } catch (error) {
         console.error('モデルのロードに失敗', error);
+        setTranscription('エラー：AIモデルの準備に失敗しました');
       }
     }
     loadModel();
@@ -26,20 +42,17 @@ export function useLocalWhisper() {
 
   async function startRecording() {
     try {
-      // 1. マイク権限の確認
       const permission = await Audio.requestPermissionsAsync();
       if (permission.status !== 'granted') return;
 
-      // 2. Whisper専用の純粋WAV（16kHz, モノラル, 16-bit PCM）として録音機を初期化
       AudioRecord.init({
         sampleRate: 16000,
         channels: 1,
         bitsPerSample: 16,
-        audioSource: 6, // 6 = VOICE_RECOGNITION（音声認識に最適化されたマイク設定）
-        wavFile: 'whisper_audio.wav', // 保存されるファイル名
+        audioSource: 6,
+        wavFile: 'whisper_audio.wav',
       });
 
-      // 3. 録音開始
       AudioRecord.start();
       setIsRecording(true);
       setTranscription('');
@@ -54,11 +67,9 @@ export function useLocalWhisper() {
     setTranscription('録音完了。AIが推論しています...');
 
     try {
-      // 1. 録音を停止し、生成された「本物のWAV」の絶対パスを取得
       const audioFileAbsolutePath = await AudioRecord.stop();
       setIsRecording(false);
 
-      // 2. FFmpegでの変換は不要！直接Whisperに渡す
       const { result } = await whisperContext.transcribe(audioFileAbsolutePath, {
         language: 'ja',
       });
