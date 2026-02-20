@@ -1,3 +1,4 @@
+//* eslint-disable import/namespace */
 import { useState, useEffect } from 'react';
 import { Audio } from 'expo-av';
 import AudioRecord from 'react-native-audio-record';
@@ -13,15 +14,18 @@ export function useLocalWhisper() {
   useEffect(() => {
     async function loadModel() {
       try {
-        // ライブラリの型定義バグを回避するため、any型にキャストして強制抽出
-        const documentDirectory = (FileSystem as any).documentDirectory;
+        // ライブラリの型定義バグを回避するため、any型にキャスト
+        const fsAny = FileSystem as any;
+        
+        // 【修正ポイント】documentDirectory が取得できない場合の予備（cacheDirectory）を追加
+        const baseDir = fsAny.documentDirectory || fsAny.cacheDirectory;
 
-        if (!documentDirectory) {
-          throw new Error('端末の保存領域にアクセスできません');
+        if (!baseDir) {
+          throw new Error('端末の保存領域にアクセスできません。\n原因：ネイティブアプリの更新が完了していません。\n解決策：アプリをアンインストールし、npx expo run:android を実行してください。');
         }
 
         // スマホの内部ストレージの絶対パスを定義
-        const modelPath = documentDirectory + 'ggml-tiny.bin';
+        const modelPath = baseDir + 'ggml-tiny.bin';
         const fileInfo = await FileSystem.getInfoAsync(modelPath);
 
         // モデルが存在しない場合（初回起動時）のみダウンロード（OTA）
@@ -89,7 +93,6 @@ export function useLocalWhisper() {
     }
   }
 
-  // ここでフロントエンド（UI）側にすべての変数と関数をエクスポートする
   return {
     isRecording,
     transcription,
