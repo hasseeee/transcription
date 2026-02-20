@@ -14,7 +14,7 @@ export function useLocalWhisper() {
       try {
         const context = await initWhisper({
           // eslint-disable-next-line @typescript-eslint/no-require-imports
-          filePath: require('@/assets/ggml-tiny.bin'),
+          filePath: require('../assets/ggml-tiny.bin'),
         });
         setWhisperContext(context);
       } catch (error) {
