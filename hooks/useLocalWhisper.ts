@@ -1,9 +1,9 @@
+/* eslint-disable import/namespace */
 import { useState, useEffect } from 'react';
 import { Audio } from 'expo-av';
 import AudioRecord from 'react-native-audio-record';
 import { initWhisper, WhisperContext } from 'whisper.rn';
-// 【重要】名前空間( * as )を使わず、必要な機能だけを直接抽出（名前付きインポート）
-import { documentDirectory, getInfoAsync, downloadAsync } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system'; // 公式推奨の全体インポートに戻す
 
 export function useLocalWhisper() {
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
@@ -14,21 +14,21 @@ export function useLocalWhisper() {
   useEffect(() => {
     async function loadModel() {
       try {
-        // TypeScriptの型エラーを完全に封じ込めるためのNullチェック
-        if (!documentDirectory) {
+        // TypeScriptの型エラーを封じ込めるNullチェック
+        if (!FileSystem.documentDirectory) {
           throw new Error('端末の保存領域にアクセスできません');
         }
 
         // スマホの内部ストレージ（ドキュメントフォルダ）の絶対パスを定義
-        const modelPath = documentDirectory + 'ggml-tiny.bin';
-        const fileInfo = await getInfoAsync(modelPath);
+        const modelPath = FileSystem.documentDirectory + 'ggml-tiny.bin';
+        const fileInfo = await FileSystem.getInfoAsync(modelPath);
 
         // モデルが存在しない場合（初回起動時）のみ、直接ダウンロード（OTA）
         if (!fileInfo.exists) {
           setTranscription('初回設定：AIの脳みそをダウンロード中...(約75MB) しばらくお待ちください。');
           
           const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin';
-          await downloadAsync(modelUrl, modelPath);
+          await FileSystem.downloadAsync(modelUrl, modelPath);
           
           setTranscription('ダウンロード完了！AIの準備が整いました。');
         }
