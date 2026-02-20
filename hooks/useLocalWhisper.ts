@@ -1,133 +1,83 @@
 import { useState, useEffect } from 'react';
-import { Audio } from 'expo-av';
-import { documentDirectory, getInfoAsync, downloadAsync, deleteAsync } from 'expo-file-system/legacy';
-// @ts-ignore を撤廃し、先ほど定義した型を適用してインポート
+import { Audio } from 'expo-av'; // 権限リクエスト用としてのみ残す
+import AudioRecord from 'react-native-audio-record'; // 新しい純粋WAV録音ライブラリ
 import { initWhisper, WhisperContext } from 'whisper.rn';
-import { FFmpegKit, ReturnCode } from '@sheehanmunim/react-native-ffmpeg';
 
 export function useLocalWhisper() {
-  // any を撤廃し、自作した WhisperContext 型を厳格に適用
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
-  const [recording, setRecording] = useState<Audio.Recording | undefined>();
-  const [transcription, setTranscription] = useState<string>('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcription, setTranscription] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
-    setupModel();
-  }, []);
-
-  async function setupModel() {
-    try {
-      const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin';
-      
-      // パス取得の異常系ハンドリング（これは安全のために残します）
-      if (!documentDirectory) {
-        throw new Error('ローカルストレージのパスが取得できませんでした');
+    async function loadModel() {
+      try {
+        const context = await initWhisper({
+          filePath: require('@/assets/ggml-tiny.bin'),
+        });
+        setWhisperContext(context);
+      } catch (error) {
+        console.error('モデルのロードに失敗', error);
       }
-      
-      const modelPath = `${documentDirectory}ggml-tiny.bin`;
-      const fileInfo = await getInfoAsync(modelPath);
-      
-      if (!fileInfo.exists) {
-        console.log('モデルをダウンロード中...');
-        await downloadAsync(modelUrl, modelPath);
-      }
-      const context = await initWhisper({ filePath: modelPath });
-      setWhisperContext(context);
-    } catch (error) {
-      console.error('モデルの準備に失敗', error);
-    } finally {
-      setIsInitializing(false);
     }
-  }
+    loadModel();
+  }, []);
 
   async function startRecording() {
     try {
-      await Audio.requestPermissionsAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      
-      const { recording } = await Audio.Recording.createAsync({
-        isMeteringEnabled: true,
-        android: {
-          extension: '.wav',
-          outputFormat: Audio.AndroidOutputFormat.DEFAULT,
-          audioEncoder: Audio.AndroidAudioEncoder.DEFAULT,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-        },
-        ios: { 
-          extension: '.wav',
-          audioQuality: Audio.IOSAudioQuality.HIGH,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 128000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: { mimeType: 'audio/webm', bitsPerSecond: 128000 }
+      // 1. マイク権限の確認
+      const permission = await Audio.requestPermissionsAsync();
+      if (permission.status !== 'granted') return;
+
+      // 2. Whisper専用の純粋WAV（16kHz, モノラル, 16-bit PCM）として録音機を初期化
+      AudioRecord.init({
+        sampleRate: 16000,
+        channels: 1,
+        bitsPerSample: 16,
+        audioSource: 6, // 6 = VOICE_RECOGNITION（音声認識に最適化されたマイク設定）
+        wavFile: 'whisper_audio.wav', // 保存されるファイル名
       });
-      setRecording(recording);
-    } catch (err) {
-      console.error('録音開始失敗', err);
+
+      // 3. 録音開始
+      AudioRecord.start();
+      setIsRecording(true);
+      setTranscription('');
+    } catch (error) {
+      console.error('録音開始エラー', error);
     }
   }
 
   async function stopAndTranscribe() {
-    if (!recording || !whisperContext) return;
+    if (!isRecording || !whisperContext) return;
     setIsProcessing(true);
-    setTranscription('音声ファイルをAI用に変換中...');
-    
+    setTranscription('録音完了。AIが推論しています...');
+
     try {
-      setRecording(undefined);
-      await recording.stopAndUnloadAsync();
-      const originalUri = recording.getURI();
-      
-      if (originalUri) {
-        // --- 変換パイプライン ---
-        // 変換後の本物WAVファイルの保存先を定義
-        const wavUri = `${documentDirectory}converted_audio.wav`;
-        
-        // 前回の古いファイルが残っていれば削除
-        const fileInfo = await getInfoAsync(wavUri);
-        if (fileInfo.exists) {
-          await deleteAsync(wavUri);
-        }
+      // 1. 録音を停止し、生成された「本物のWAV」の絶対パスを取得
+      const audioFileAbsolutePath = await AudioRecord.stop();
+      setIsRecording(false);
 
-        // FFmpegで 16kHz(-ar), モノラル(-ac), 16-bit PCM(-c:a pcm_s16le) に強制変換
-        const ffmpegCommand = `-i ${originalUri} -ar 16000 -ac 1 -c:a pcm_s16le ${wavUri}`;
-        const session = await FFmpegKit.execute(ffmpegCommand);
-        const returnCode = await session.getReturnCode();
+      // 2. FFmpegでの変換は不要！直接Whisperに渡す
+      const { result } = await whisperContext.transcribe(audioFileAbsolutePath, {
+        language: 'ja',
+      });
+      setTranscription(result || "（聞き取れませんでした）");
 
-        // 変換成功時の処理
-        if (ReturnCode.isSuccess(returnCode)) {
-          setTranscription('文字起こし中（AIが推論しています）...');
-          
-          // 変換された「本物のWAV」をWhisperエンジンに渡す
-          const { result } = await whisperContext.transcribe(wavUri, {
-            language: 'ja',
-          });
-          setTranscription(result || "（聞き取れませんでした）");
-        } else {
-          throw new Error('音声フォーマットの変換に失敗しました');
-        }
-      }
     } catch (error) {
       console.error('推論失敗', error);
-      setTranscription('エラーが発生しました（コンソールを確認してください）');
+      setTranscription('エラーが発生しました');
+      setIsRecording(false);
     } finally {
       setIsProcessing(false);
     }
   }
 
   return {
-    isInitializing,
-    isRecording: !!recording,
-    isProcessing,
+    isRecording,
     transcription,
+    isProcessing,
     startRecording,
     stopAndTranscribe,
-    isModelReady: !!whisperContext
+    isModelLoaded: !!whisperContext,
   };
 }
