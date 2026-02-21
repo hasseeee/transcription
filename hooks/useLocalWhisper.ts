@@ -124,23 +124,43 @@ export function useLocalWhisper() {
   async function saveAndTranscribe() {
     if (!recordedAudioPath || !whisperContext || isProcessing) return;
     setIsProcessing(true);
-    setTranscription('WAV音声をAIエンジンに送信し、推論しています...\n（数十秒かかります。アプリを閉じないでください）');
+    setTranscription('音声を安全な内部領域へ隔離し、AIエンジンに送信しています...\n（数十秒かかります）');
     
     try {
-      // 【インフラ修正】C++層の fopen 関数が読めるよう、URIスキームを正規表現で物理的に剥がす
+      // 【対策1】録音データのOSバッファがディスクに完全に書き込まれるのを待つ
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // パスから不要なURIスキームを剥がす
       const cleanPath = recordedAudioPath.replace(/^file:\/\//, '');
 
-      // デバッグ：JS層の仮想パスから、OS層の物理パスに変わったことを確認
-      console.log(`[システム監視] C++用 絶対パス: ${cleanPath}`);
-      const stat = await RNFS.stat(cleanPath);
+      // 【対策2】Androidのセキュリティを突破するため、
+      // C++エンジンが確実にアクセスできる「アプリ専用の内部サンドボックス」へファイルをコピーする
+      const documentDirectory = RNFS.DocumentDirectoryPath;
+      const safePath = `${documentDirectory}/ai_processing_audio.wav`;
+
+      // 過去のゴミファイルがあれば削除
+      if (await RNFS.exists(safePath)) {
+        await RNFS.unlink(safePath);
+      }
+      
+      // OSレベルでファイルを安全な領域へ物理コピー（権限のクレンジング）
+      await RNFS.copyFile(cleanPath, safePath);
+
+      const stat = await RNFS.stat(safePath);
+      console.log(`[システム監視] コピー後の安全なパス: ${safePath}`);
       console.log(`[システム監視] ファイルサイズ: ${stat.size} bytes`);
 
-      // 剥がしたクリーンなパス（cleanPath）をAIエンジンに渡す
-      const { result } = await whisperContext.transcribe(cleanPath, { 
+      if (stat.size < 1000) {
+        setTranscription(`エラー：録音データが空です（サイズ: ${stat.size} bytes）。`);
+        return;
+      }
+
+      // 【対策3】権限が100%保証された内部ファイルの絶対パスをC++エンジンに渡す
+      const { result } = await whisperContext.transcribe(safePath, { 
         language: 'ja',
         onProgress: (progress) => {
           console.log(`[AIエンジン内部] 推論進捗: ${progress}%`);
-          // 0%から徐々に上がるかを確認
+          // 画面に進捗をリアルタイム描画
           setTranscription(`AIが推論中... 脳内処理: ${progress}%\n（アプリを閉じないでください）`);
         }
       });
