@@ -14,12 +14,20 @@ export function useLocalWhisper() {
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const downloadJobId = useRef<number>(-1);
 
+  // 【新規】データパイプラインのフェーズごとのログを管理するステート
+  const [processLogs, setProcessLogs] = useState<string[]>([]);
+
+  // ログを追加し、コンソールとUIの両方に出力するユーティリティ関数
+  const addPhaseLog = (logMessage: string) => {
+    console.log(`[Pipeline] ${logMessage}`);
+    setProcessLogs(prev => [...prev, logMessage]);
+  };
+
   useEffect(() => {
     async function loadModel() {
       try {
         const documentDirectory = RNFS.DocumentDirectoryPath;
         if (!documentDirectory) throw new Error('端末の保存領域にアクセスできません。');
-
         const finalPath = `${documentDirectory}/ggml-base.bin`;
         const tmpPath = `${documentDirectory}/ggml-base.tmp`;
 
@@ -39,7 +47,6 @@ export function useLocalWhisper() {
         if (needsDownload) {
           setTranscription('高精度AIモデルをダウンロードしています...');
           const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
-          
           const ret = RNFS.downloadFile({
             fromUrl: modelUrl,
             toFile: tmpPath,
@@ -63,9 +70,8 @@ export function useLocalWhisper() {
         const context = await initWhisper({ filePath: finalPath });
         setWhisperContext(context);
       } catch (error: any) {
-        // 【修正】エラー内容を握りつぶさず、必ずコンソールに出力する
         console.error('モデルのロードに失敗', error);
-        setTranscription('エラー：AIモデルの準備に失敗しました。アプリを再起動してください。');
+        setTranscription('エラー：AIモデルの準備に失敗しました。');
       }
     }
     loadModel();
@@ -98,9 +104,9 @@ export function useLocalWhisper() {
       AudioRecord.start();
       setIsRecording(true);
       setRecordedAudioPath(null);
+      setProcessLogs([]); // 録音開始時にログをクリア
       setTranscription('録音中...');
     } catch (error) {
-      // 【修正】ここでもエラーを出力
       console.error('録音開始エラー', error);
       setTranscription('エラー：録音を開始できませんでした。');
     }
@@ -111,9 +117,7 @@ export function useLocalWhisper() {
     try {
       const path = await AudioRecord.stop();
       setIsRecording(false);
-
       const finalPath = path.startsWith('file://') ? path : `file://${path}`;
-      
       setRecordedAudioPath(finalPath);
       setTranscription('録音が完了しました。「保存して文字起こし」を実行してください。');
     } catch (error) {
@@ -121,55 +125,46 @@ export function useLocalWhisper() {
     }
   }
 
+  // 【アーキテクチャ刷新】パーセントではなく、フェーズごとの状態をロギングする
   async function saveAndTranscribe() {
     if (!recordedAudioPath || !whisperContext || isProcessing) return;
     setIsProcessing(true);
-    setTranscription('音声を安全な内部領域へ隔離し、AIエンジンに送信しています...\n（数十秒かかります）');
-    
+    setProcessLogs([]);
+    setTranscription('');
+
     try {
-      // 【対策1】録音データのOSバッファがディスクに完全に書き込まれるのを待つ
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // パスから不要なURIスキームを剥がす
+      addPhaseLog('Phase 1: 録音ファイルのパスを受け取りました。');
       const cleanPath = recordedAudioPath.replace(/^file:\/\//, '');
+      addPhaseLog(`-> 対象パス: ${cleanPath}`);
 
-      // 【対策2】Androidのセキュリティを突破するため、
-      // C++エンジンが確実にアクセスできる「アプリ専用の内部サンドボックス」へファイルをコピーする
-      const documentDirectory = RNFS.DocumentDirectoryPath;
-      const safePath = `${documentDirectory}/ai_processing_audio.wav`;
+      addPhaseLog('Phase 2: OSファイルシステム上のメタデータを検証します。');
+      const exists = await RNFS.exists(cleanPath);
+      if (!exists) throw new Error('OS上にファイルが存在しません。');
+      
+      const stat = await RNFS.stat(cleanPath);
+      addPhaseLog(`-> 実ファイルサイズ: ${stat.size} bytes`);
+      if (stat.size < 1000) throw new Error('データが不足しています（1000 bytes未満）。');
 
-      // 過去のゴミファイルがあれば削除
-      if (await RNFS.exists(safePath)) {
-        await RNFS.unlink(safePath);
+      addPhaseLog('Phase 3: WAVヘッダ（先頭44バイト）の整合性を検証します。');
+      // ファイルの先頭44バイトをBase64文字列として抽出
+      const headerBase64 = await RNFS.read(cleanPath, 44, 0, 'base64');
+      addPhaseLog(`-> ヘッダ(Base64): ${headerBase64.substring(0, 25)}...`);
+
+      addPhaseLog('Phase 4: C++ AIエンジンへファイルパスを渡し、推論を開始します。');
+      // ※onProgressはUIフリーズの原因となるため外し、完了のみを待つ
+      const { result } = await whisperContext.transcribe(cleanPath, { language: 'ja' });
+      
+      addPhaseLog('Phase 5: C++エンジンから処理結果が返却されました。');
+      if (!result || result.trim() === '') {
+        addPhaseLog('-> 警告: 処理は正常終了しましたが、認識された文字列が空でした。WAVヘッダ破損の疑いがあります。');
+        setTranscription('（推論完了：認識された言葉がありませんでした）');
+      } else {
+        addPhaseLog(`-> 出力成功: ${result}`);
+        setTranscription(result);
       }
-      
-      // OSレベルでファイルを安全な領域へ物理コピー（権限のクレンジング）
-      await RNFS.copyFile(cleanPath, safePath);
-
-      const stat = await RNFS.stat(safePath);
-      console.log(`[システム監視] コピー後の安全なパス: ${safePath}`);
-      console.log(`[システム監視] ファイルサイズ: ${stat.size} bytes`);
-
-      if (stat.size < 1000) {
-        setTranscription(`エラー：録音データが空です（サイズ: ${stat.size} bytes）。`);
-        return;
-      }
-
-      // 【対策3】権限が100%保証された内部ファイルの絶対パスをC++エンジンに渡す
-      const { result } = await whisperContext.transcribe(safePath, { 
-        language: 'ja',
-        onProgress: (progress) => {
-          console.log(`[AIエンジン内部] 推論進捗: ${progress}%`);
-          // 画面に進捗をリアルタイム描画
-          setTranscription(`AIが推論中... 脳内処理: ${progress}%\n（アプリを閉じないでください）`);
-        }
-      });
-      
-      console.log(`[AIエンジン内部] 最終出力: ${result}`);
-      setTranscription(result || "（推論完了しましたが、AIが言葉を認識できませんでした）");
-      
-    } catch (error) {
+    } catch (error: any) {
       console.error('推論失敗', error);
+      addPhaseLog(`Phase Error: ${error.message || error}`);
       setTranscription('エラーが発生しました');
     } finally {
       setIsProcessing(false);
@@ -184,7 +179,6 @@ export function useLocalWhisper() {
       const { sound } = await Audio.Sound.createAsync({ uri: recordedAudioPath });
       await sound.playAsync();
     } catch (error) {
-      // 【修正】ここでもエラーを出力
       console.error('再生エラー', error);
       setTranscription('エラー：音声の再生に失敗しました。');
     }
@@ -192,6 +186,7 @@ export function useLocalWhisper() {
 
   return {
     isRecording, transcription, isProcessing, recordedAudioPath, downloadProgress,
+    processLogs, // 【追加】UI側にログを渡す
     startRecording, stopRecording, saveAndTranscribe, cancelDownload, playRecordedAudio,
     isModelLoaded: !!whisperContext,
   };
