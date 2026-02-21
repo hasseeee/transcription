@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
-import { Audio } from 'expo-av'; // 権限とテスト再生用としてのみ残します
-import AudioRecord from 'react-native-audio-record'; // 最高のWAV生成ツールに帰還します
+import { Audio } from 'expo-av';
+import AudioRecord from 'react-native-audio-record';
 import { initWhisper, WhisperContext } from 'whisper.rn';
 import RNFS from 'react-native-fs';
 
@@ -62,7 +62,9 @@ export function useLocalWhisper() {
 
         const context = await initWhisper({ filePath: finalPath });
         setWhisperContext(context);
-      } catch (error) {
+      } catch (error: any) {
+        // 【修正】エラー内容を握りつぶさず、必ずコンソールに出力する
+        console.error('モデルのロードに失敗', error);
         setTranscription('エラー：AIモデルの準備に失敗しました。アプリを再起動してください。');
       }
     }
@@ -77,7 +79,6 @@ export function useLocalWhisper() {
     }
   }
 
-  // 【修正】WAVファイルの生成に特化した AudioRecord を再び採用
   async function startRecording() {
     try {
       const permission = await Audio.requestPermissionsAsync();
@@ -87,10 +88,10 @@ export function useLocalWhisper() {
       }
       
       AudioRecord.init({ 
-        sampleRate: 16000, // AI必須の16kHz
-        channels: 1,       // AI必須のモノラル
-        bitsPerSample: 16, // AI必須の16ビット
-        audioSource: 1,    // 標準マイク（無音化回避）
+        sampleRate: 16000,
+        channels: 1,      
+        bitsPerSample: 16,
+        audioSource: 1,   
         wavFile: 'whisper_audio.wav' 
       });
       
@@ -99,6 +100,8 @@ export function useLocalWhisper() {
       setRecordedAudioPath(null);
       setTranscription('録音中...');
     } catch (error) {
+      // 【修正】ここでもエラーを出力
+      console.error('録音開始エラー', error);
       setTranscription('エラー：録音を開始できませんでした。');
     }
   }
@@ -109,7 +112,6 @@ export function useLocalWhisper() {
       const path = await AudioRecord.stop();
       setIsRecording(false);
 
-      // 【最重要】Android/iOS問わず、C++エンジンに絶対パスを伝えるための file:// プレフィックスを強制付与
       const finalPath = path.startsWith('file://') ? path : `file://${path}`;
       
       setRecordedAudioPath(finalPath);
@@ -125,7 +127,6 @@ export function useLocalWhisper() {
     setTranscription('WAV音声をAIエンジンに送信し、推論しています...\n（数十秒かかります。アプリを閉じないでください）');
     
     try {
-      // 純粋なWAVファイルと、言語指定のみで勝負する
       const { result } = await whisperContext.transcribe(recordedAudioPath, { language: 'ja' });
       setTranscription(result || "（推論完了しましたが、AIが言葉を認識できませんでした）");
     } catch (error) {
@@ -144,6 +145,8 @@ export function useLocalWhisper() {
       const { sound } = await Audio.Sound.createAsync({ uri: recordedAudioPath });
       await sound.playAsync();
     } catch (error) {
+      // 【修正】ここでもエラーを出力
+      console.error('再生エラー', error);
       setTranscription('エラー：音声の再生に失敗しました。');
     }
   }
