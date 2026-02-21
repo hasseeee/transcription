@@ -1,20 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { Alert, Platform } from 'react-native';
-import { Audio } from 'expo-av';
+import { Alert } from 'react-native';
+import { Audio } from 'expo-av'; // 権限とテスト再生用としてのみ残します
+import AudioRecord from 'react-native-audio-record'; // 最高のWAV生成ツールに帰還します
 import { initWhisper, WhisperContext } from 'whisper.rn';
 import RNFS from 'react-native-fs';
 
 export function useLocalWhisper() {
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
-  
-  // 【新規】expo-avの録音インスタンスを保持するステート
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
-  
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [transcription, setTranscription] = useState('');
   const [recordedAudioPath, setRecordedAudioPath] = useState<string | null>(null);
-  
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const downloadJobId = useRef<number>(-1);
 
@@ -27,9 +23,7 @@ export function useLocalWhisper() {
         const finalPath = `${documentDirectory}/ggml-base.bin`;
         const tmpPath = `${documentDirectory}/ggml-base.tmp`;
 
-        if (await RNFS.exists(tmpPath)) {
-          await RNFS.unlink(tmpPath);
-        }
+        if (await RNFS.exists(tmpPath)) await RNFS.unlink(tmpPath);
 
         let needsDownload = true;
         if (await RNFS.exists(finalPath)) {
@@ -51,34 +45,25 @@ export function useLocalWhisper() {
             toFile: tmpPath,
             progressInterval: 200,
             progress: (res) => {
-              const percentage = (res.bytesWritten / res.contentLength) * 100;
-              setDownloadProgress(Math.round(percentage));
+              setDownloadProgress(Math.round((res.bytesWritten / res.contentLength) * 100));
             }
           });
-          
           downloadJobId.current = ret.jobId;
 
           const downloadResult = await ret.promise;
-          
           if (downloadResult.statusCode === 200) {
             await RNFS.moveFile(tmpPath, finalPath);
             setDownloadProgress(0);
             setTranscription('高精度AIの準備が完了しました。');
           } else {
-             throw new Error(`ダウンロード通信失敗: HTTP ${downloadResult.statusCode}`);
+             throw new Error(`HTTP ${downloadResult.statusCode}`);
           }
         }
 
         const context = await initWhisper({ filePath: finalPath });
         setWhisperContext(context);
-
-      } catch (error: any) {
-        if (error.message === 'Download has been aborted') {
-          console.log('ユーザーによってダウンロードが中断されました');
-        } else {
-          console.error('モデルのロードに失敗', error);
-          setTranscription('エラー：AIモデルの準備に失敗しました。アプリを再起動してください。');
-        }
+      } catch (error) {
+        setTranscription('エラー：AIモデルの準備に失敗しました。アプリを再起動してください。');
       }
     }
     loadModel();
@@ -88,11 +73,11 @@ export function useLocalWhisper() {
     if (downloadJobId.current !== -1) {
       RNFS.stopDownload(downloadJobId.current);
       setDownloadProgress(0);
-      setTranscription('ダウンロードを中断しました。アプリを再起動すると最初からやり直せます。');
+      setTranscription('ダウンロードを中断しました。');
     }
   }
 
-  // 【アーキテクチャ刷新】expo-avによる堅牢な録音ロジック（Whisper専用フォーマット）
+  // 【修正】WAVファイルの生成に特化した AudioRecord を再び採用
   async function startRecording() {
     try {
       const permission = await Audio.requestPermissionsAsync();
@@ -101,66 +86,33 @@ export function useLocalWhisper() {
         return;
       }
       
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+      AudioRecord.init({ 
+        sampleRate: 16000, // AI必須の16kHz
+        channels: 1,       // AI必須のモノラル
+        bitsPerSample: 16, // AI必須の16ビット
+        audioSource: 1,    // 標準マイク（無音化回避）
+        wavFile: 'whisper_audio.wav' 
       });
-
-      // 【修正】高音質プリセットを捨て、Whisperが要求する厳格なフォーマットをカスタム指定
-      const whisperOptions = {
-        android: {
-          extension: '.m4a',
-          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
-          audioEncoder: Audio.AndroidAudioEncoder.AAC,
-          sampleRate: 16000, // 【最重要】AIの耳と同じ周波数（16kHz）に固定
-          numberOfChannels: 1, // ステレオ(2)ではなくモノラル(1)に固定
-          bitRate: 64000,
-        },
-        ios: {
-          extension: '.wav',
-          audioQuality: Audio.IOSAudioQuality.HIGH,
-          sampleRate: 16000,
-          numberOfChannels: 1,
-          bitRate: 256000,
-          linearPCMBitDepth: 16,
-          linearPCMIsBigEndian: false,
-          linearPCMIsFloat: false,
-        },
-        web: {
-          mimeType: 'audio/webm',
-          bitsPerSecond: 128000,
-        },
-      };
-
-      // カスタムオプションを使って、最初からAIが読める形で録音を開始する
-      const { recording: newRecording } = await Audio.Recording.createAsync(whisperOptions);
       
-      setRecording(newRecording);
+      AudioRecord.start();
       setIsRecording(true);
       setRecordedAudioPath(null);
       setTranscription('録音中...');
     } catch (error) {
-      console.error('録音開始エラー', error);
       setTranscription('エラー：録音を開始できませんでした。');
     }
   }
 
   async function stopRecording() {
-    if (!recording) return;
+    if (!isRecording) return;
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      if (!uri) throw new Error('音声URIが取得できませんでした');
-
-      // C++エンジンが読み込めるよう、Androidの場合は file:// プレフィックスを安全に除去
-      let path = uri;
-      if (Platform.OS === 'android' && path.startsWith('file://')) {
-        path = path.replace('file://', '');
-      }
-
-      setRecording(null);
+      const path = await AudioRecord.stop();
       setIsRecording(false);
-      setRecordedAudioPath(path);
+
+      // 【最重要】Android/iOS問わず、C++エンジンに絶対パスを伝えるための file:// プレフィックスを強制付与
+      const finalPath = path.startsWith('file://') ? path : `file://${path}`;
+      
+      setRecordedAudioPath(finalPath);
       setTranscription('録音が完了しました。「保存して文字起こし」を実行してください。');
     } catch (error) {
       console.error('録音停止エラー', error);
@@ -170,10 +122,10 @@ export function useLocalWhisper() {
   async function saveAndTranscribe() {
     if (!recordedAudioPath || !whisperContext || isProcessing) return;
     setIsProcessing(true);
-    setTranscription('音声をデコードし、高精度AIが推論しています...\n（数十秒かかります。アプリを閉じないでください）');
+    setTranscription('WAV音声をAIエンジンに送信し、推論しています...\n（数十秒かかります。アプリを閉じないでください）');
     
     try {
-      // OS標準のデコーダが自動解凍するため、破損の心配なしに直接推論を実行できる
+      // 純粋なWAVファイルと、言語指定のみで勝負する
       const { result } = await whisperContext.transcribe(recordedAudioPath, { language: 'ja' });
       setTranscription(result || "（推論完了しましたが、AIが言葉を認識できませんでした）");
     } catch (error) {
@@ -189,26 +141,16 @@ export function useLocalWhisper() {
     if (!recordedAudioPath) return;
     try {
       setTranscription('🔊 録音データをスピーカーからテスト再生しています...');
-      const uri = recordedAudioPath.startsWith('file://') ? recordedAudioPath : `file://${recordedAudioPath}`;
-      const { sound } = await Audio.Sound.createAsync({ uri });
+      const { sound } = await Audio.Sound.createAsync({ uri: recordedAudioPath });
       await sound.playAsync();
     } catch (error) {
-      console.error('再生エラー', error);
       setTranscription('エラー：音声の再生に失敗しました。');
     }
   }
 
   return {
-    isRecording,
-    transcription,
-    isProcessing,
-    recordedAudioPath,
-    downloadProgress,
-    startRecording,
-    stopRecording,
-    saveAndTranscribe,
-    cancelDownload,
-    playRecordedAudio,
+    isRecording, transcription, isProcessing, recordedAudioPath, downloadProgress,
+    startRecording, stopRecording, saveAndTranscribe, cancelDownload, playRecordedAudio,
     isModelLoaded: !!whisperContext,
   };
 }
