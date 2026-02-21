@@ -1,29 +1,32 @@
-import React from 'react';
-import { View, Text, Button, StyleSheet, ActivityIndicator } from 'react-native';
 import { useLocalWhisper } from '@/hooks/useLocalWhisper';
+import React from 'react';
+import { ActivityIndicator, Button, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 export default function AppScreen() {
   const {
-    isRecording,
-    transcription,
-    isProcessing,
-    recordedAudioPath,
-    downloadProgress,
-    startRecording,
-    stopRecording,
-    saveAndTranscribe,
-    cancelDownload,
-    playRecordedAudio, // 【修正】バックエンドから関数を正しく受け取る
+    isRecording, transcription, isProcessing, recordedAudioPath, downloadProgress,
+    processLogs, // フックからログ配列を受け取る
+    startRecording, stopRecording, saveAndTranscribe, cancelDownload, playRecordedAudio,
     isModelLoaded,
   } = useLocalWhisper();
 
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>高精度ローカルAI 音声保存システム</Text>
       
       <View style={styles.statusBox}>
         <Text style={styles.statusText}>{transcription || '待機中...'}</Text>
       </View>
+
+      {/* 【新規】データパイプラインのフェーズ別ログ出力エリア（開発環境のみ表示） */}
+      {__DEV__ && processLogs.length > 0 && (
+        <View style={styles.logBox}>
+          <Text style={styles.logTitle}>バックエンド処理ログ (テスト用):</Text>
+          {processLogs.map((log, index) => (
+            <Text key={index} style={styles.logText}>{log}</Text>
+          ))}
+        </View>
+      )}
 
       {downloadProgress > 0 && !isModelLoaded && (
         <View style={styles.progressContainer}>
@@ -52,26 +55,27 @@ export default function AppScreen() {
             />
           ) : (
             <View style={{ gap: 10 }}>
-              {/* デバッグ用テスト再生ボタン */}
               <Button title="🔊 録音した音声をテスト再生する" onPress={playRecordedAudio} color="#f0ad4e" />
-              
-              <Button title="💾 音声を保存して文字起こしを実行" onPress={saveAndTranscribe} color="#5cb85c" />
+              <Button title="💾 音声を保存して推論パイプラインを実行" onPress={saveAndTranscribe} color="#5cb85c" />
               <Button title="やり直す（破棄）" onPress={() => startRecording()} color="#777" />
             </View>
           )}
         </View>
       ) : null}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  title: { fontSize: 20, fontWeight: 'bold', marginBottom: 30, color: '#333' },
-  statusBox: { width: '100%', minHeight: 150, padding: 15, borderRadius: 8, borderWidth: 1, borderColor: '#ddd', marginBottom: 30, justifyContent: 'center' },
+  container: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+  title: { fontSize: 20, fontWeight: 'bold', marginBottom: 20, color: '#333' },
+  statusBox: { width: '100%', minHeight: 100, padding: 15, borderRadius: 8, borderWidth: 1, borderColor: '#ddd', marginBottom: 20, justifyContent: 'center' },
   statusText: { fontSize: 16, color: '#444', textAlign: 'center', lineHeight: 24 },
+  logBox: { width: '100%', backgroundColor: '#1e1e1e', padding: 10, borderRadius: 8, marginBottom: 20 },
+  logTitle: { color: '#4af626', fontWeight: 'bold', marginBottom: 5 },
+  logText: { color: '#d4d4d4', fontSize: 12, fontFamily: 'monospace', marginBottom: 2 },
   buttonContainer: { width: '90%', borderRadius: 8 },
-  processingContainer: { alignItems: 'center' },
+  processingContainer: { alignItems: 'center', marginVertical: 20 },
   progressContainer: { width: '90%', alignItems: 'center', marginBottom: 20 },
   progressText: { fontSize: 16, marginBottom: 10, color: '#333' },
   progressBarBackground: { width: '100%', height: 20, backgroundColor: '#e0e0e0', borderRadius: 10, overflow: 'hidden', marginBottom: 15 },
