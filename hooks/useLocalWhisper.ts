@@ -1,95 +1,176 @@
-//* eslint-disable import/namespace */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { Alert, Platform } from 'react-native';
 import { Audio } from 'expo-av';
-import AudioRecord from 'react-native-audio-record';
 import { initWhisper, WhisperContext } from 'whisper.rn';
-import * as FileSystem from 'expo-file-system';
+import RNFS from 'react-native-fs';
 
 export function useLocalWhisper() {
   const [whisperContext, setWhisperContext] = useState<WhisperContext | null>(null);
+  
+  // 【新規】expo-avの録音インスタンスを保持するステート
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  
   const [isRecording, setIsRecording] = useState(false);
-  const [transcription, setTranscription] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [transcription, setTranscription] = useState('');
+  const [recordedAudioPath, setRecordedAudioPath] = useState<string | null>(null);
+  
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const downloadJobId = useRef<number>(-1);
 
   useEffect(() => {
     async function loadModel() {
       try {
-        // ライブラリの型定義バグを回避するため、any型にキャスト
-        const fsAny = FileSystem as any;
-        
-        // 【修正ポイント】documentDirectory が取得できない場合の予備（cacheDirectory）を追加
-        const baseDir = fsAny.documentDirectory || fsAny.cacheDirectory;
+        const documentDirectory = RNFS.DocumentDirectoryPath;
+        if (!documentDirectory) throw new Error('端末の保存領域にアクセスできません。');
 
-        if (!baseDir) {
-          throw new Error('端末の保存領域にアクセスできません。\n原因：ネイティブアプリの更新が完了していません。\n解決策：アプリをアンインストールし、npx expo run:android を実行してください。');
+        const finalPath = `${documentDirectory}/ggml-base.bin`;
+        const tmpPath = `${documentDirectory}/ggml-base.tmp`;
+
+        if (await RNFS.exists(tmpPath)) {
+          await RNFS.unlink(tmpPath);
         }
 
-        // スマホの内部ストレージの絶対パスを定義
-        const modelPath = baseDir + 'ggml-tiny.bin';
-        const fileInfo = await FileSystem.getInfoAsync(modelPath);
-
-        // モデルが存在しない場合（初回起動時）のみダウンロード（OTA）
-        if (!fileInfo.exists) {
-          setTranscription('初回設定：AIの脳みそをダウンロード中...(約75MB) しばらくお待ちください。');
-          
-          const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin';
-          await FileSystem.downloadAsync(modelUrl, modelPath);
-          
-          setTranscription('ダウンロード完了！AIの準備が整いました。');
+        let needsDownload = true;
+        if (await RNFS.exists(finalPath)) {
+          const stat = await RNFS.stat(finalPath);
+          if (stat.size / (1024 * 1024) > 100) {
+            needsDownload = false;
+            setTranscription('AIの準備が完了しています。');
+          } else {
+            await RNFS.unlink(finalPath);
+          }
         }
 
-        const context = await initWhisper({ filePath: modelPath });
+        if (needsDownload) {
+          setTranscription('高精度AIモデルをダウンロードしています...');
+          const modelUrl = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
+          
+          const ret = RNFS.downloadFile({
+            fromUrl: modelUrl,
+            toFile: tmpPath,
+            progressInterval: 200,
+            progress: (res) => {
+              const percentage = (res.bytesWritten / res.contentLength) * 100;
+              setDownloadProgress(Math.round(percentage));
+            }
+          });
+          
+          downloadJobId.current = ret.jobId;
+
+          const downloadResult = await ret.promise;
+          
+          if (downloadResult.statusCode === 200) {
+            await RNFS.moveFile(tmpPath, finalPath);
+            setDownloadProgress(0);
+            setTranscription('高精度AIの準備が完了しました。');
+          } else {
+             throw new Error(`ダウンロード通信失敗: HTTP ${downloadResult.statusCode}`);
+          }
+        }
+
+        const context = await initWhisper({ filePath: finalPath });
         setWhisperContext(context);
 
-      } catch (error) {
-        console.error('モデルのロードに失敗', error);
-        setTranscription('エラー：AIモデルの準備に失敗しました');
+      } catch (error: any) {
+        if (error.message === 'Download has been aborted') {
+          console.log('ユーザーによってダウンロードが中断されました');
+        } else {
+          console.error('モデルのロードに失敗', error);
+          setTranscription('エラー：AIモデルの準備に失敗しました。アプリを再起動してください。');
+        }
       }
     }
     loadModel();
   }, []);
 
-  async function startRecording() {
-    try {
-      const permission = await Audio.requestPermissionsAsync();
-      if (permission.status !== 'granted') return;
-
-      AudioRecord.init({
-        sampleRate: 16000,
-        channels: 1,
-        bitsPerSample: 16,
-        audioSource: 6,
-        wavFile: 'whisper_audio.wav',
-      });
-
-      AudioRecord.start();
-      setIsRecording(true);
-      setTranscription('');
-    } catch (error) {
-      console.error('録音開始エラー', error);
+  function cancelDownload() {
+    if (downloadJobId.current !== -1) {
+      RNFS.stopDownload(downloadJobId.current);
+      setDownloadProgress(0);
+      setTranscription('ダウンロードを中断しました。アプリを再起動すると最初からやり直せます。');
     }
   }
 
-  async function stopAndTranscribe() {
-    if (!isRecording || !whisperContext) return;
-    setIsProcessing(true);
-    setTranscription('録音完了。AIが推論しています...');
-
+  // 【アーキテクチャ刷新】expo-avによる堅牢な録音ロジック
+  async function startRecording() {
     try {
-      const audioFileAbsolutePath = await AudioRecord.stop();
-      setIsRecording(false);
-
-      const { result } = await whisperContext.transcribe(audioFileAbsolutePath, {
-        language: 'ja',
+      const permission = await Audio.requestPermissionsAsync();
+      if (permission.status !== 'granted') {
+        Alert.alert('権限エラー', 'マイクへのアクセスが許可されていません。');
+        return;
+      }
+      
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
       });
-      setTranscription(result || "（聞き取れませんでした）");
 
+      // OS標準のエンコーダを使用し、最も安全な形式（Androidなら .m4a）で録音する
+      const { recording: newRecording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY
+      );
+      
+      setRecording(newRecording);
+      setIsRecording(true);
+      setRecordedAudioPath(null);
+      setTranscription('録音中...');
+    } catch (error) {
+      console.error('録音開始エラー', error);
+      setTranscription('エラー：録音を開始できませんでした。');
+    }
+  }
+
+  async function stopRecording() {
+    if (!recording) return;
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      if (!uri) throw new Error('音声URIが取得できませんでした');
+
+      // C++エンジンが読み込めるよう、Androidの場合は file:// プレフィックスを安全に除去
+      let path = uri;
+      if (Platform.OS === 'android' && path.startsWith('file://')) {
+        path = path.replace('file://', '');
+      }
+
+      setRecording(null);
+      setIsRecording(false);
+      setRecordedAudioPath(path);
+      setTranscription('録音が完了しました。「保存して文字起こし」を実行してください。');
+    } catch (error) {
+      console.error('録音停止エラー', error);
+    }
+  }
+
+  async function saveAndTranscribe() {
+    if (!recordedAudioPath || !whisperContext || isProcessing) return;
+    setIsProcessing(true);
+    setTranscription('音声をデコードし、高精度AIが推論しています...\n（数十秒かかります。アプリを閉じないでください）');
+    
+    try {
+      // OS標準のデコーダが自動解凍するため、破損の心配なしに直接推論を実行できる
+      const { result } = await whisperContext.transcribe(recordedAudioPath, { language: 'ja' });
+      setTranscription(result || "（推論完了しましたが、AIが言葉を認識できませんでした）");
     } catch (error) {
       console.error('推論失敗', error);
       setTranscription('エラーが発生しました');
-      setIsRecording(false);
     } finally {
       setIsProcessing(false);
+      setRecordedAudioPath(null);
+    }
+  }
+
+  async function playRecordedAudio() {
+    if (!recordedAudioPath) return;
+    try {
+      setTranscription('🔊 録音データをスピーカーからテスト再生しています...');
+      const uri = recordedAudioPath.startsWith('file://') ? recordedAudioPath : `file://${recordedAudioPath}`;
+      const { sound } = await Audio.Sound.createAsync({ uri });
+      await sound.playAsync();
+    } catch (error) {
+      console.error('再生エラー', error);
+      setTranscription('エラー：音声の再生に失敗しました。');
     }
   }
 
@@ -97,8 +178,13 @@ export function useLocalWhisper() {
     isRecording,
     transcription,
     isProcessing,
+    recordedAudioPath,
+    downloadProgress,
     startRecording,
-    stopAndTranscribe,
+    stopRecording,
+    saveAndTranscribe,
+    cancelDownload,
+    playRecordedAudio,
     isModelLoaded: !!whisperContext,
   };
 }
