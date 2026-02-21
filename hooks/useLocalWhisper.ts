@@ -127,17 +127,20 @@ export function useLocalWhisper() {
     setTranscription('WAV音声をAIエンジンに送信し、推論しています...\n（数十秒かかります。アプリを閉じないでください）');
     
     try {
-      // 【デバッグ追加】AIに渡す直前のファイルの完全な情報をログに出力
-      const stat = await RNFS.stat(recordedAudioPath);
-      console.log(`[システム監視] 対象ファイル: ${recordedAudioPath}`);
+      // 【インフラ修正】C++層の fopen 関数が読めるよう、URIスキームを正規表現で物理的に剥がす
+      const cleanPath = recordedAudioPath.replace(/^file:\/\//, '');
+
+      // デバッグ：JS層の仮想パスから、OS層の物理パスに変わったことを確認
+      console.log(`[システム監視] C++用 絶対パス: ${cleanPath}`);
+      const stat = await RNFS.stat(cleanPath);
       console.log(`[システム監視] ファイルサイズ: ${stat.size} bytes`);
 
-      const { result } = await whisperContext.transcribe(recordedAudioPath, { 
+      // 剥がしたクリーンなパス（cleanPath）をAIエンジンに渡す
+      const { result } = await whisperContext.transcribe(cleanPath, { 
         language: 'ja',
-        // 【新規】C++エンジンの計算進捗をJS側でリアルタイムに受け取る
-        onProgress: (progress: number) => {
+        onProgress: (progress) => {
           console.log(`[AIエンジン内部] 推論進捗: ${progress}%`);
-          // 画面にも進捗を表示させる
+          // 0%から徐々に上がるかを確認
           setTranscription(`AIが推論中... 脳内処理: ${progress}%\n（アプリを閉じないでください）`);
         }
       });
