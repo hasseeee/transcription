@@ -121,25 +121,56 @@ export function useLocalWhisper() {
     }
   }
 
-  async function stopRecording() {
-    if (!recording) return;
+  // 【アーキテクチャ刷新】expo-avによる堅牢な録音ロジック（Whisper専用フォーマット）
+  async function startRecording() {
     try {
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
-      if (!uri) throw new Error('音声URIが取得できませんでした');
-
-      // C++エンジンが読み込めるよう、Androidの場合は file:// プレフィックスを安全に除去
-      let path = uri;
-      if (Platform.OS === 'android' && path.startsWith('file://')) {
-        path = path.replace('file://', '');
+      const permission = await Audio.requestPermissionsAsync();
+      if (permission.status !== 'granted') {
+        Alert.alert('権限エラー', 'マイクへのアクセスが許可されていません。');
+        return;
       }
+      
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
 
-      setRecording(null);
-      setIsRecording(false);
-      setRecordedAudioPath(path);
-      setTranscription('録音が完了しました。「保存して文字起こし」を実行してください。');
+      // 【修正】高音質プリセットを捨て、Whisperが要求する厳格なフォーマットをカスタム指定
+      const whisperOptions = {
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
+          sampleRate: 16000, // 【最重要】AIの耳と同じ周波数（16kHz）に固定
+          numberOfChannels: 1, // ステレオ(2)ではなくモノラル(1)に固定
+          bitRate: 64000,
+        },
+        ios: {
+          extension: '.wav',
+          audioQuality: Audio.IOSAudioQuality.HIGH,
+          sampleRate: 16000,
+          numberOfChannels: 1,
+          bitRate: 256000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+        web: {
+          mimeType: 'audio/webm',
+          bitsPerSecond: 128000,
+        },
+      };
+
+      // カスタムオプションを使って、最初からAIが読める形で録音を開始する
+      const { recording: newRecording } = await Audio.Recording.createAsync(whisperOptions);
+      
+      setRecording(newRecording);
+      setIsRecording(true);
+      setRecordedAudioPath(null);
+      setTranscription('録音中...');
     } catch (error) {
-      console.error('録音停止エラー', error);
+      console.error('録音開始エラー', error);
+      setTranscription('エラー：録音を開始できませんでした。');
     }
   }
 
