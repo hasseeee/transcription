@@ -92,35 +92,6 @@ export function useLocalWhisper() {
     }
   }
 
-  // 【アーキテクチャ刷新】expo-avによる堅牢な録音ロジック
-  async function startRecording() {
-    try {
-      const permission = await Audio.requestPermissionsAsync();
-      if (permission.status !== 'granted') {
-        Alert.alert('権限エラー', 'マイクへのアクセスが許可されていません。');
-        return;
-      }
-      
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-
-      // OS標準のエンコーダを使用し、最も安全な形式（Androidなら .m4a）で録音する
-      const { recording: newRecording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      
-      setRecording(newRecording);
-      setIsRecording(true);
-      setRecordedAudioPath(null);
-      setTranscription('録音中...');
-    } catch (error) {
-      console.error('録音開始エラー', error);
-      setTranscription('エラー：録音を開始できませんでした。');
-    }
-  }
-
   // 【アーキテクチャ刷新】expo-avによる堅牢な録音ロジック（Whisper専用フォーマット）
   async function startRecording() {
     try {
@@ -171,6 +142,28 @@ export function useLocalWhisper() {
     } catch (error) {
       console.error('録音開始エラー', error);
       setTranscription('エラー：録音を開始できませんでした。');
+    }
+  }
+
+  async function stopRecording() {
+    if (!recording) return;
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      if (!uri) throw new Error('音声URIが取得できませんでした');
+
+      // C++エンジンが読み込めるよう、Androidの場合は file:// プレフィックスを安全に除去
+      let path = uri;
+      if (Platform.OS === 'android' && path.startsWith('file://')) {
+        path = path.replace('file://', '');
+      }
+
+      setRecording(null);
+      setIsRecording(false);
+      setRecordedAudioPath(path);
+      setTranscription('録音が完了しました。「保存して文字起こし」を実行してください。');
+    } catch (error) {
+      console.error('録音停止エラー', error);
     }
   }
 
