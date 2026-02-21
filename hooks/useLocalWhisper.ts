@@ -121,14 +121,30 @@ export function useLocalWhisper() {
     }
   }
 
-  async function saveAndTranscribe() {
+  aasync function saveAndTranscribe() {
     if (!recordedAudioPath || !whisperContext || isProcessing) return;
     setIsProcessing(true);
     setTranscription('WAV音声をAIエンジンに送信し、推論しています...\n（数十秒かかります。アプリを閉じないでください）');
     
     try {
-      const { result } = await whisperContext.transcribe(recordedAudioPath, { language: 'ja' });
+      // 【デバッグ追加】AIに渡す直前のファイルの完全な情報をログに出力
+      const stat = await RNFS.stat(recordedAudioPath);
+      console.log(`[システム監視] 対象ファイル: ${recordedAudioPath}`);
+      console.log(`[システム監視] ファイルサイズ: ${stat.size} bytes`);
+
+      const { result } = await whisperContext.transcribe(recordedAudioPath, { 
+        language: 'ja',
+        // 【新規】C++エンジンの計算進捗をJS側でリアルタイムに受け取る
+        onProgress: (progress) => {
+          console.log(`[AIエンジン内部] 推論進捗: ${progress}%`);
+          // 画面にも進捗を表示させる
+          setTranscription(`AIが推論中... 脳内処理: ${progress}%\n（アプリを閉じないでください）`);
+        }
+      });
+      
+      console.log(`[AIエンジン内部] 最終出力: ${result}`);
       setTranscription(result || "（推論完了しましたが、AIが言葉を認識できませんでした）");
+      
     } catch (error) {
       console.error('推論失敗', error);
       setTranscription('エラーが発生しました');
