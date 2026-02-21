@@ -152,7 +152,8 @@ export function useLocalWhisper() {
 
       addPhaseLog('Phase 4: C++ AIエンジンへファイルパスを渡し、推論を開始します。');
       // ※onProgressはUIフリーズの原因となるため外し、完了のみを待つ
-      const { result } = await whisperContext.transcribe(cleanPath, { language: 'ja' });
+      const { promise } = whisperContext.transcribe(cleanPath, { language: 'ja' });
+      const { result } = await promise;
       
       addPhaseLog('Phase 5: C++エンジンから処理結果が返却されました。');
       if (!result || result.trim() === '') {
