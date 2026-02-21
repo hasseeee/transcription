@@ -7,6 +7,7 @@ declare module 'whisper.rn' {
     tokenTimestamps?: boolean;
     weight_thold?: number;
     word_thold?: number;
+    onProgress?: (progress: number) => void;
   }
 
   // 文字起こしの結果
