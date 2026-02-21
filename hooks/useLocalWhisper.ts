@@ -93,12 +93,16 @@ export function useLocalWhisper() {
         return;
       }
       
+      // 毎回新しいファイル名で録音する（ファイルロックやヘッダ破損の回避）
+      const timestamp = new Date().getTime();
+      const newWavFile = `whisper_audio_${timestamp}.wav`;
+      
       AudioRecord.init({ 
         sampleRate: 16000,
         channels: 1,      
         bitsPerSample: 16,
         audioSource: 1,   
-        wavFile: 'whisper_audio.wav' 
+        wavFile: newWavFile 
       });
       
       AudioRecord.start();
@@ -117,9 +121,13 @@ export function useLocalWhisper() {
     try {
       const path = await AudioRecord.stop();
       setIsRecording(false);
+      
+      // ファイルの書き込み完了を少し待つ（Androidのヘッダ更新遅延対策）
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       const finalPath = path.startsWith('file://') ? path : `file://${path}`;
       setRecordedAudioPath(finalPath);
-      setTranscription('録音が完了しました。「保存して文字起こし」を実行してください。');
+      setTranscription('録音が完了しました。「保存して推論パイプラインを実行」を実行してください。');
     } catch (error) {
       console.error('録音停止エラー', error);
     }
@@ -152,8 +160,7 @@ export function useLocalWhisper() {
 
       addPhaseLog('Phase 4: C++ AIエンジンへファイルパスを渡し、推論を開始します。');
       // ※onProgressはUIフリーズの原因となるため外し、完了のみを待つ
-      const { promise } = whisperContext.transcribe(cleanPath, { language: 'ja' });
-      const { result } = await promise;
+      const { result } = await whisperContext.transcribe(cleanPath, { language: 'ja' });
       
       addPhaseLog('Phase 5: C++エンジンから処理結果が返却されました。');
       if (!result || result.trim() === '') {
